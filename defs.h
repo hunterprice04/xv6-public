@@ -9,6 +9,9 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+/***************************************/
+struct pstat;
+/***************************************/
 
 // bio.c
 void            binit(void);
@@ -120,6 +123,10 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
+/***************************************/
+int             settickets(int);
+int             getpinfo(struct pstat*);
+/***************************************/
 
 // swtch.S
 void            swtch(struct context**, struct context*);

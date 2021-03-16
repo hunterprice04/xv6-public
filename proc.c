@@ -6,6 +6,10 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+/***************************************/
+#include "pstat.h"
+#include "rand.c"
+/***************************************/
 
 struct {
   struct spinlock lock;
@@ -15,10 +19,16 @@ struct {
 static struct proc *initproc;
 
 int nextpid = 1;
+/***************************************/
+int totaltickets = 0;
+/***************************************/
+
 extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
+
+
 
 void
 pinit(void)
@@ -111,6 +121,14 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+
+  /***************************************/
+  // give the process its default ticket and ticks
+  p->tickets = 1;
+  p->ticks = 0;
+  totaltickets = totaltickets + 1;
+
+  /***************************************/
 
   return p;
 }
@@ -216,6 +234,12 @@ fork(void)
 
   np->state = RUNNABLE;
 
+  /***************************************/
+  // give the forked process the same number of
+  // tickets as the parent process.
+  np->tickets = curproc->tickets;
+  /***************************************/
+
   release(&ptable.lock);
 
   return pid;
@@ -248,6 +272,13 @@ exit(void)
   curproc->cwd = 0;
 
   acquire(&ptable.lock);
+
+  /***************************************/
+  // fix the total tickets because process ended
+  totaltickets = totaltickets - curproc->tickets;
+  curproc->ticks = 0;
+  curproc->tickets = 0;
+  /***************************************/
 
   // Parent might be sleeping in wait().
   wakeup1(curproc->parent);
@@ -311,7 +342,7 @@ wait(void)
   }
 }
 
-//PAGEBREAK: 42
+// PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -324,32 +355,63 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
+  /***************************************/
+  int counter, winner;
+  /***************************************/
+
   c->proc = 0;
   
   for(;;){
     // Enable interrupts on this processor.
     sti();
 
+    /***************************************/
+    // set the counter and winning ticket
+    counter = 0;
+    winner = random_at_most(totaltickets);
+    /***************************************/
+
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
+    int i = 0;
+    /***************************************/
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      // continue if the process is not runnable
+      if (p->state != RUNNABLE){
+        i++;
         continue;
+        }
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+      // increment counter
+      counter = counter + p->tickets;
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
+      // if at the winning ticket perform the context switch
+      if (counter > winner){
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+        // Switch to chosen process.  It is the process's job
+        // to release ptable.lock and then reacquire it
+        // before jumping back to us.
+        c->proc = p;
+
+        switchuvm(p);
+        p->state = RUNNING;
+        p->ticks++;
+
+        swtch(&(c->scheduler), p->context);
+        switchkvm();
+
+        // uncomment this line to collect data on the scheduler
+        // cprintf("%d;%d;%d\n", p->pid, p->tickets, p->ticks);
+
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+        break;
+      }
+      i++;
     }
+    /***************************************/
+
     release(&ptable.lock);
 
   }
@@ -488,6 +550,14 @@ kill(int pid)
       // Wake process from sleep if necessary.
       if(p->state == SLEEPING)
         p->state = RUNNABLE;
+
+      /***************************************/
+      // fix the total tickets because process ended
+      totaltickets = totaltickets - p->tickets;
+      p->ticks = 0;
+      p->tickets = 0;
+      /***************************************/
+
       release(&ptable.lock);
       return 0;
     }
@@ -532,3 +602,49 @@ procdump(void)
     cprintf("\n");
   }
 }
+
+/***************************************/
+// Sets the number of tickets of the calling process.
+// Returns 0 if successful and -1 otherwise.
+int
+settickets(int number)
+{
+  struct proc *p;
+
+  // check for invalid params
+  if (number < 1)
+      return -1;
+
+  p = myproc();
+
+  // assign the process the number of tickets and fix total tickets
+  totaltickets = totaltickets - p->tickets + number;
+  p->tickets = number;
+
+  return 0;
+}
+/***************************************/
+
+/***************************************/
+// Returns information about all running processes
+// by populating the pstat pointer passed as a
+// parameter.
+int
+getpinfo(struct pstat *p)
+{
+  int i;
+
+  // check for invalid params
+  if (p == 0)
+      return -1;
+
+  // populate the pstat object
+  for(i = 0; i < NPROC; i++) {
+    p->pid[i] = ptable.proc[i].pid;
+    p->tickets[i] = ptable.proc[i].tickets;
+    p->ticks[i] = ptable.proc[i].ticks;
+    p->inuse[i] = (ptable.proc[i].state != UNUSED);
+  }
+  return 0;
+}
+/***************************************/
